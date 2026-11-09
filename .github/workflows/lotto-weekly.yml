@@ -1,0 +1,70 @@
+name: 로또 데이터 업데이트 및 사이트 배포
+
+on:
+  schedule:
+    # GitHub 일정은 UTC 기준입니다. 한국시간 = UTC + 9시간
+    - cron: '40 12 * * 6'   # 토요일 21:40 (한국시간) - 추첨 약 1시간 뒤
+    - cron: '10 0 * * 0'    # 일요일 09:10 (한국시간) - 토요일에 못 받았으면 다시 확인
+    - cron: '10 0 * * 1'    # 월요일 09:10 (한국시간) - 한 번 더 확인
+  workflow_dispatch:         # Actions 탭에서 직접 실행
+  push:
+    branches: [main]         # 파일을 고쳐 올리면 바로 다시 배포
+
+permissions:
+  contents: write            # 새 데이터를 저장소에 커밋
+  pages: write               # GitHub Pages 배포
+  id-token: write
+
+concurrency:
+  group: lotto-pages
+  cancel-in-progress: false
+
+jobs:
+  update-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: 저장소 내려받기
+        uses: actions/checkout@v7
+
+      - name: Node.js 준비
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: 새 회차 반영과 이번 주 추천 계산
+        id: update
+        run: node scripts/update-data.mjs
+
+      - name: 바뀐 파일 저장(커밋)
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html README.md picks-log.csv
+          git commit -m "자동 업데이트: 1~${{ steps.update.outputs.last }}회 데이터, ${{ steps.update.outputs.target }}회 추천"
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+      - name: 사이트 파일 준비
+        if: steps.update.outputs.changed == 'true' || github.event_name != 'schedule'
+        run: |
+          mkdir -p _site
+          cp index.html _site/index.html
+
+      - name: Pages 설정 확인
+        if: steps.update.outputs.changed == 'true' || github.event_name != 'schedule'
+        uses: actions/configure-pages@v6
+
+      - name: 사이트 파일 올리기
+        if: steps.update.outputs.changed == 'true' || github.event_name != 'schedule'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+      - name: GitHub Pages 배포
+        id: deploy
+        if: steps.update.outputs.changed == 'true' || github.event_name != 'schedule'
+        uses: actions/deploy-pages@v5
