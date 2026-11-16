@@ -91,6 +91,15 @@ p { margin: 0 0 10px; max-width: 74ch; }
 section.block { background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 22px 24px; margin-bottom: 18px; }
 .verdict { font-weight: 600; margin-bottom: 8px; }
 
+/* ledger */
+.ledger { background: var(--paper); border: 1px solid var(--rule); border-left: 3px solid var(--slip); border-radius: 6px; padding: 14px 20px 12px; margin-bottom: 26px; }
+.ledger-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin-bottom: 8px; }
+.ledger-head h3 { font-size: 16px; margin: 0; }
+.ledger-head span { font-size: 13px; color: var(--ink-2); }
+.ledger .tiles { margin: 0; border-bottom: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.ledger .v.loss { color: var(--band-3); }
+.ledger .v.gain { color: var(--good); }
+.ledger details { margin-top: 6px; }
 /* facts row */
 .facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); margin: 0 0 22px; }
 .facts > div { padding: 12px 16px 12px 0; }
@@ -259,6 +268,11 @@ footer p { max-width: none; margin: 0 0 4px; }
 </header>
 
 <main class="wrap">
+  <section class="ledger" id="ledger" aria-live="polite">
+    <div class="ledger-head"><h3>추천 5게임을 매주 모두 샀다면</h3><span id="ledgerNote">계산 중입니다…</span></div>
+    <div class="tiles" id="ledgerTiles"></div>
+    <div id="ledgerMore"></div>
+  </section>
   <!-- 이번 주 추천 -->
   <div class="panel" role="tabpanel" id="p-rec" aria-labelledby="tab-rec">
     <h2 id="recTitle">추천 번호</h2>
@@ -1044,6 +1058,7 @@ footer p { max-width: none; margin: 0 0 4px; }
     }
     state.evidenceDone = false; state.self = null; state.cov = null; state.bt = null; randomLogm = null;
     renderAll();
+    computeLedger();
   }
 
   /* ---------------- header status ---------------- */
@@ -1632,6 +1647,52 @@ footer p { max-width: none; margin: 0 0 4px; }
     out.appendChild(h('p', { class: 'small', text: '가장 많이 맞은 회차: ' + best.r.no + '회(' + best.r.date + '), ' + best.m + '개 일치.' }));
   }
 
+
+  /* ---------------- 누적 구매·당첨 장부 ---------------- */
+  var TRACK_START = 1250, LS_LEDGER = 'lotto645.ledger.v1', ledgerJob = 0;
+  function loadLedgerCache() { try { return JSON.parse(localStorage.getItem(LS_LEDGER)) || {}; } catch (e) { return {}; } }
+  function saveLedgerCache(c) { try { localStorage.setItem(LS_LEDGER, JSON.stringify(c)); } catch (e) { /* 무시 */ } }
+  function prizeOf(row, rk) { if (!rk) return 0; return row.prizes[rk - 1] || (rk === 4 ? 50000 : rk === 5 ? 5000 : 0); }
+  function computeLedger() {
+    var job = ++ledgerJob, rows = state.rows, cache = loadLedgerCache(), out = [], startIdx = -1;
+    for (var i = 0; i < rows.length; i++) if (rows[i].no === TRACK_START) { startIdx = i; break; }
+    if (startIdx < 0) { renderLedger([], true); return; }
+    var t = startIdx;
+    (function step() {
+      if (job !== ledgerJob) return;
+      var end = Math.min(t + 3, rows.length);
+      for (; t < end; t++) {
+        var act = rows[t], key = rows[t - 1].no + ':' + rows[t - 1].nums.join('-'), c = cache[act.no];
+        if (!c || c.key !== key) { var A = E.analyze(rows.slice(0, t)); c = { key: key, sets: E.recommend(A, 0).sets.map(function (s) { return s.nums; }) }; cache[act.no] = c; }
+        out.push({ row: act, games: c.sets.map(function (nums) { var rk = E.prizeRank(nums, act); return { nums: nums, match: E.overlap(nums, act.nums), rank: rk, prize: prizeOf(act, rk) }; }) });
+      }
+      renderLedger(out, t >= rows.length);
+      if (t < rows.length) setTimeout(step, 0); else saveLedgerCache(cache);
+    })();
+  }
+  function renderLedger(out, done) {
+    var tiles = clear($('ledgerTiles')), more = clear($('ledgerMore')), next = lastRow().no + 1;
+    if (!out.length) { $('ledgerNote').textContent = TRACK_START + '회 추첨 뒤부터 집계합니다. 1주에 5게임, 5,000원 기준.'; return; }
+    var buy = out.length * 5000, win = 0, ranks = [0, 0, 0, 0, 0, 0];
+    out.forEach(function (w) { w.games.forEach(function (g) { win += g.prize; ranks[g.rank]++; }); });
+    var net = win - buy;
+    $('ledgerNote').textContent = TRACK_START + '회~' + out[out.length - 1].row.no + '회, ' + out.length + '주 동안 매주 5게임(5,000원) 기준' + (done ? '. ' + next + '회 5,000원은 추첨 후 더해집니다.' : ' (계산 중…)');
+    [['누적 구매', fmt(buy) + '원', ''], ['누적 당첨금', fmt(win) + '원', ''], ['손익', (net > 0 ? '+' : net < 0 ? '−' : '') + fmt(Math.abs(net)) + '원', net < 0 ? 'loss' : net > 0 ? 'gain' : ''], ['회수율', pct(win / buy)]]
+      .forEach(function (tl) { tiles.appendChild(h('div', null, [h('div', { class: 'l', text: tl[0] }), h('div', { class: 'v' + (tl[2] ? ' ' + tl[2] : ''), text: tl[1] })])); });
+    var hits = [1, 2, 3, 4, 5].filter(function (k) { return ranks[k]; }).map(function (k) { return k + '등 ' + ranks[k] + '번'; });
+    more.appendChild(h('p', { class: 'small muted', style: 'margin:8px 0 0', text: '당첨 내역: ' + (hits.length ? hits.join(', ') : '아직 없음') + '. 구매액의 평균 50%가 돌아오는 게임이라 길게 보면 손실이 쌓이는 것이 정상입니다.' }));
+    var tbl = h('table', { class: 'num' }, [h('thead', null, [h('tr', null, ['회차', '당첨번호', 'A', 'B', 'C', 'D', 'E', '당첨금', '누적 손익'].map(function (x, i) { return h('th', { class: i >= 2 ? 'r' : '', text: x }); }))])]);
+    var tb = h('tbody'), cum = 0, trs = [];
+    out.forEach(function (w) {
+      var wwin = w.games.reduce(function (s2, g) { return s2 + g.prize; }, 0); cum += wwin - 5000;
+      trs.push(h('tr', null, [h('td', { text: w.row.no + '회' }), h('td', null, [balls(w.row.nums, true), ' + ', ball(w.row.bonus, 'sm')])]
+        .concat(w.games.map(function (g) { return h('td', { class: 'r', text: g.match + (g.rank ? ' (' + g.rank + '등)' : '') }); }),
+          [h('td', { class: 'r', text: fmt(wwin) + '원' }), h('td', { class: 'r', text: (cum < 0 ? '−' : cum > 0 ? '+' : '') + fmt(Math.abs(cum)) + '원' })])));
+    });
+    trs.reverse().forEach(function (tr) { tb.appendChild(tr); });
+    tbl.appendChild(tb);
+    more.appendChild(h('details', null, [h('summary', { text: '주별 내역 보기 (게임별 일치 개수)' }), h('div', { class: 'scroll' }, [tbl])]));
+  }
   /* ---------------- tabs & wiring ---------------- */
   var TABS = ['rec', 'upd', 'sta', 'evi', 'my'];
   function selectTab(id) {
